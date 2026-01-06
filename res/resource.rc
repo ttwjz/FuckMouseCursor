@@ -1,0 +1,40 @@
+#include <windows.h>
+#pragma code_page(65001)
+
+// 1. 图标资源
+101 ICON "on.ico"
+102 ICON "off.ico"
+
+// 2. 版本信息资源
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0
+PRODUCTVERSION  1,0,0
+FILEFLAGSMASK   0x3fL
+#ifdef _DEBUG
+FILEFLAGS       0x1L
+#else
+FILEFLAGS       0x0L
+#endif
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0" // 中文(简体), Unicode
+        BEGIN
+            VALUE "CompanyName",      "Mr.Wu Studio"
+            VALUE "FileDescription",  "去你的鼠标指针"
+            VALUE "FileVersion",      "1.0.0"
+            VALUE "InternalName",     "MouseHider"
+            VALUE "LegalCopyright",   "Copyright (C) 2026"
+            VALUE "OriginalFilename", "FuckMouseCursor.exe"
+            VALUE "ProductName",      "Fuck Mouse Cursor"
+            VALUE "ProductVersion",   "1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200 // 0x804 = CN, 1200 = Unicode
+    END
+END
