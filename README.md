@@ -6,7 +6,7 @@
 
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d7.svg)](https://www.microsoft.com/windows/)
 [![Language](https://img.shields.io/badge/language-C%2B%2B17-blue.svg)](https://isocpp.org/)
-[![Size](https://img.shields.io/badge/size-%3C100KB-success.svg)]()
+[![Size](https://img.shields.io/badge/size-64KB-success.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ![on.ico](https://youke3.picui.cn/s1/2026/01/06/695d018684885.ico)
@@ -31,7 +31,7 @@
     *   ✅ 自动忽略导航键（`Home`, `End` 等）和功能键 (`F1-F12`)。
 *   **极致性能**:
     *   **近乎0% CPU 占用**: 采用“按需启动”的定时器机制，空闲时彻底休眠。
-    *   **极低内存**: 移除 C++ 标准库依赖 (`-fno-exceptions`, `-fno-rtti`)，纯 Win32 API 实现，体积仅约 100KB+。
+    *   **极低内存**: 移除 C++ 标准库依赖 (`-fno-exceptions`, `-fno-rtti`)，纯 Win32 API 实现，体积仅约 64KB。
     *   **无 Hook 延迟**: 隐藏期间自动卸载耗时的鼠标钩子，改用高效轮询，不影响高回报率游戏鼠标性能。
 *   **完美体验**:
     *   **防抖动**: 连续输入时重置计时，长按按键时移动鼠标不闪烁。
@@ -91,7 +91,8 @@ cmake --build . --config Release
 4.  **移动鼠标**：鼠标立即出现。
 5.  **右键托盘图标**：
     *   **状态切换**: 开启或暂停隐藏功能。
-    *   **开机自启**: 设置随系统启动。
+    *   **开机自启**: 设置随系统启动（管理员身份）。
+    *   **以管理员身份重启**: 软件获得管理员权限。
     *   **退出**: 关闭程序。
 6.  **双击托盘图标**: 快速切换 开启/暂停 状态。
 
