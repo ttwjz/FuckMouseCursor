@@ -28,6 +28,7 @@ constexpr int WM_DESKTOP_SWITCH = WM_USER + 3; // 自定义消息，用于在主
 constexpr int ID_TRAY_EXIT = 1001;
 constexpr int ID_TRAY_TOGGLE = 1002;
 constexpr int ID_TRAY_AUTOSTART = 1003;
+constexpr int ID_TRAY_RESTART_ADMIN = 1004; // 以管理员重启
 
 constexpr int ID_TIMER_HIDE_DELAY = 101; // 指针隐藏延时器
 constexpr int ID_TIMER_MONITOR = 102;    // 指针移动监控器
@@ -46,7 +47,8 @@ struct AppContext
 
     NOTIFYICONDATA nid;
     HWND hMainWnd;
-    HCURSOR hGlobalTransCursor; // 透明指针句柄
+    HCURSOR hGlobalTransCursor;  // 透明指针句柄
+    HANDLE hSingleInstanceMutex; // 保存单实例互斥体句柄，以便重启时释放
 
     // 状态标志
     bool isEnabled;             // 功能启用状态
@@ -54,6 +56,7 @@ struct AppContext
     bool isTimerPending;        // 是否正在500ms延时隐藏指针
     bool isMonitorRunning;      // 100ms指针移动监控器是否运行
     bool isLongPressSuppressed; // 长按抑制标记
+    bool isAdmin;               // 当前是否为管理员权限
 
     // 状态追踪变量，替代 GetAsyncKeyState
     bool isCtrlDown;
@@ -86,6 +89,8 @@ bool IsAutoStart();              // 检测是否开机自启动
 void ToggleAutoStart();          // 切换开机自启动状态
 bool IsContentKey(DWORD vkCode); // 判断是否为内容按键
 void EnableHighDPI();            // 启用高DPI支持
+bool CheckIsAdmin();             // 检测管理员权限
+void RestartAsAdmin();           // 以管理员重启
 
 // --- 核心逻辑: 按键过滤 (性能优化版) ---
 bool IsContentKey(DWORD vkCode)
@@ -319,7 +324,10 @@ void HideMouseCursor()
 
     GetCursorPos(&ctx.ptLastPos);
 
-    const int cursors[] = {OCR_NORMAL, OCR_IBEAM, OCR_HAND, OCR_WAIT, OCR_APPSTARTING, OCR_SIZENWSE, OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL, OCR_NO};
+    const int cursors[] = {OCR_NORMAL, OCR_IBEAM, OCR_WAIT,
+                           OCR_CROSS, OCR_UP, OCR_SIZENWSE,
+                           OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS,
+                           OCR_SIZEALL, OCR_NO, OCR_HAND, OCR_APPSTARTING, 32651};
     for (int id : cursors)
         SetSystemCursor(CopyCursor(ctx.hGlobalTransCursor), id);
 
@@ -347,6 +355,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CREATE: // 窗口创建
         ctx.isEnabled = true;
         ctx.hMainWnd = hwnd;
+        ctx.isAdmin = CheckIsAdmin(); // 初始化时检测权限
 
         ctx.nid.cbSize = sizeof(NOTIFYICONDATA);
         ctx.nid.hWnd = hwnd;
@@ -357,7 +366,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         Shell_NotifyIcon(NIM_ADD, &ctx.nid);
 
         InitTransparentCursor();
-        // 【初始化时】如果启用，则挂载钩子
+        // 初始化时，如果启用，则挂载钩子
         if (ctx.isEnabled)
             UpdateHooks(true);
 
@@ -439,8 +448,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd);
             HMENU hMenu = CreatePopupMenu();
+            // 显示开启状态
             AppendMenu(hMenu, ctx.isEnabled ? MF_CHECKED : 0, ID_TRAY_TOGGLE, ctx.isEnabled ? L"状态: 已开启" : L"状态: 已暂停");
+            // 显示开机自启
             AppendMenu(hMenu, IsAutoStart() ? MF_CHECKED : 0, ID_TRAY_AUTOSTART, L"开机自启动");
+            // 如果不是管理员，显示提升权限选项
+            if (!ctx.isAdmin)
+            {
+                AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenu(hMenu, 0, ID_TRAY_RESTART_ADMIN, L"以管理员身份重启");
+            }
             AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
             AppendMenu(hMenu, 0, ID_TRAY_EXIT, L"退出");
             TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, NULL);
@@ -477,6 +494,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case ID_TRAY_AUTOSTART: // 切换开机自启动
             ToggleAutoStart();
             break;
+        case ID_TRAY_RESTART_ADMIN: // 重启为管理员
+            RestartAsAdmin();
+            break;
         }
         break;
 
@@ -503,7 +523,13 @@ void UpdateTrayIcon()
     ctx.nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(iconId));
     if (!ctx.nid.hIcon)
         ctx.nid.hIcon = LoadIcon(NULL, ctx.isEnabled ? IDI_APPLICATION : IDI_SHIELD);
-    wcscpy_s(ctx.nid.szTip, ctx.isEnabled ? L"去你的鼠标指针 (已开启)" : L"去你的鼠标指针 (已暂停)");
+
+    // 在提示文本中增加管理员标识
+    wchar_t szTip[128];
+    wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
+             ctx.isEnabled ? L"已开启" : L"已暂停",
+             ctx.isAdmin ? L" [Admin]" : L"");
+    wcscpy_s(ctx.nid.szTip, szTip);
     Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
 }
 
@@ -563,15 +589,71 @@ void EnableHighDPI()
     SetProcessDPIAware();
 }
 
+// --- 检测管理员权限 ---
+bool CheckIsAdmin()
+{
+    BOOL fIsRunAsAdmin = FALSE;
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+    {
+        TOKEN_ELEVATION elevation;
+        DWORD cbSize = sizeof(TOKEN_ELEVATION);
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &cbSize))
+        {
+            fIsRunAsAdmin = elevation.TokenIsElevated;
+        }
+        CloseHandle(hToken);
+    }
+    return fIsRunAsAdmin;
+}
+
+// --- 以管理员身份重启 ---
+void RestartAsAdmin()
+{
+    wchar_t szPath[MAX_PATH];
+    if (GetModuleFileName(NULL, szPath, MAX_PATH))
+    {
+        // 1. 在启动新进程前，先释放当前的互斥体
+        // 这样新进程启动时，就不会报“程序已运行”
+        if (ctx.hSingleInstanceMutex)
+        {
+            CloseHandle(ctx.hSingleInstanceMutex);
+            ctx.hSingleInstanceMutex = NULL;
+        }
+
+        SHELLEXECUTEINFO sei = {sizeof(sei)};
+        sei.cbSize = sizeof(SHELLEXECUTEINFO);
+        sei.lpVerb = L"runas"; // 请求提升权限
+        sei.lpFile = szPath;
+        sei.hwnd = NULL;
+        sei.nShow = SW_NORMAL;
+
+        // 2. 尝试启动
+        if (ShellExecuteEx(&sei))
+        {
+            // 启动成功，直接自杀，不需要走 DestroyWindow 的消息循环了，那样太慢
+            // 使用 ExitProcess 确保立即退出，把资源完全让给新进程
+            PostQuitMessage(0);
+        }
+        else
+        {
+            // 3. 启动失败（比如用户在 UAC 点了取消）
+            // 重新把互斥体创建回来，防止用户再次双击打开程序时多开
+            ctx.hSingleInstanceMutex = CreateMutex(NULL, TRUE, L"Global\\FuckMouseCursorMutex");
+        }
+    }
+}
+
 // --- 程序入口点 ---
 int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int)
 {
     EnableHighDPI();
 
-    HANDLE m = CreateMutex(NULL, TRUE, L"Global\\FuckMouseCursorMutex");
+    // 将句柄保存到全局 ctx 中
+    ctx.hSingleInstanceMutex = CreateMutex(NULL, TRUE, L"Global\\FuckMouseCursorMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
-        MessageBox(NULL, L"程序已经在运行了！", L"提示", MB_OK | MB_ICONINFORMATION);
+        MessageBox(NULL, L"又急！程序已经在运行了！", L"提示", MB_OK | MB_ICONINFORMATION);
         return 0;
     }
 
@@ -589,5 +671,12 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int)
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+
+    // 退出前清理 Mutex (虽然系统会自动清理，但好习惯)
+    if (ctx.hSingleInstanceMutex)
+    {
+        CloseHandle(ctx.hSingleInstanceMutex);
+    }
+
     return 0;
 }
