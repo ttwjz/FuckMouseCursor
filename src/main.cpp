@@ -4,10 +4,8 @@
 // 1. 在最前面定义 Unicode，否则 Windows API 会默认用 char* 版本导致报错
 #define UNICODE
 #define _UNICODE
-
 // 2. 强制使用 OEM 资源 (用于加载系统光标)
 #define OEMRESOURCE
-
 // 3. 目标系统 Win10 (0x0A00)
 #define _WIN32_WINNT 0x0A00
 // 4. 极简模式，减少依赖
@@ -23,8 +21,9 @@
 #pragma comment(lib, "shcore.lib") // DPI适配需要
 
 // --- 常量定义 ---
-constexpr int WM_TRAYICON = WM_USER + 1;
-constexpr int WM_KICK_TIMER = WM_USER + 2;
+constexpr int WM_TRAYICON = WM_USER + 1;       // 托盘图标消息
+constexpr int WM_KICK_TIMER = WM_USER + 2;     // 自定义消息，用于启动隐藏倒计时
+constexpr int WM_DESKTOP_SWITCH = WM_USER + 3; // 自定义消息，用于在主线程处理桌面切换
 
 constexpr int ID_TRAY_EXIT = 1001;
 constexpr int ID_TRAY_TOGGLE = 1002;
@@ -33,22 +32,25 @@ constexpr int ID_TRAY_AUTOSTART = 1003;
 constexpr int ID_TIMER_HIDE_DELAY = 101; // 指针隐藏延时器
 constexpr int ID_TIMER_MONITOR = 102;    // 指针移动监控器
 
-constexpr int HIDE_DELAY_MS = 500;
-constexpr int MONITOR_INTERVAL_MS = 100;
+constexpr int HIDE_DELAY_MS = 500;                            // 指针隐藏延时500ms
+constexpr int MONITOR_INTERVAL_MS = 100;                      // 指针移动监控器间隔100ms
 constexpr int MONITOR_KEEPALIVE = 2000 / MONITOR_INTERVAL_MS; // 指针移动监控器保活2秒
-constexpr int MOUSE_THRESHOLD = 50;
+constexpr int MOUSE_THRESHOLD = 50;                           // 指针移动阈值 (像素距离的平方)
 
 // --- 全局上下文 (整合全局变量，内存布局更紧凑) ---
 struct AppContext
 {
-    HHOOK hKeyboardHook;
+    // 钩子句柄 (动态管理)
+    HHOOK hKeyboardHook;      // 键盘钩子句柄
+    HWINEVENTHOOK hEventHook; // 桌面切换事件钩子句柄
+
     NOTIFYICONDATA nid;
     HWND hMainWnd;
-    HCURSOR hGlobalTransCursor;
+    HCURSOR hGlobalTransCursor; // 透明指针句柄
 
     // 状态标志
-    bool isEnabled;
-    bool isCursorHidden;
+    bool isEnabled;             // 功能启用状态
+    bool isCursorHidden;        // 指针隐藏状态
     bool isTimerPending;        // 是否正在500ms延时隐藏指针
     bool isMonitorRunning;      // 100ms指针移动监控器是否运行
     bool isLongPressSuppressed; // 长按抑制标记
@@ -74,6 +76,7 @@ const wchar_t *APP_NAME = L"FuckMouseCursor";
 // --- 函数声明 ---
 void InitTransparentCursor();    // 初始化透明指针
 void DestroyTransparentCursor(); // 销毁透明指针
+void UpdateHooks(bool enable);   // 统一管理钩子生命周期
 void HideMouseCursor();          // 隐藏指针
 void RestoreMouseCursor();       // 恢复指针
 void StartMonitor();             // 启动指针移动监控器
@@ -135,6 +138,16 @@ bool IsContentKey(DWORD vkCode)
     return false;
 }
 
+// --- 桌面切换事件回调 ---
+// 当进入/退出 UAC、锁屏、Ctrl+Alt+Del 时触发
+void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd,
+                           LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
+{
+    // 事件回调可能在任意线程，为了线程安全，我们PostMessage给主窗口处理
+    if (event == EVENT_SYSTEM_DESKTOPSWITCH)
+        PostMessage(ctx.hMainWnd, WM_DESKTOP_SWITCH, 0, 0);
+}
+
 // --- 键盘钩子 ---
 LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
@@ -168,32 +181,27 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
         }
 
         // --- B. 业务逻辑 ---
-        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
+        if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) && !ctx.isCursorHidden)
         {
-            if (ctx.isEnabled && !ctx.isCursorHidden)
+            // 1. 长按处理
+            if (vk == ctx.lastVkCode)
             {
-                // 1. 长按处理
-                if (vk == ctx.lastVkCode)
-                {
-                    if (ctx.isLongPressSuppressed)
-                        return CallNextHookEx(ctx.hKeyboardHook, nCode, wParam, lParam);
-                }
-                else
-                {
-                    ctx.lastVkCode = vk;
-                    ctx.isLongPressSuppressed = false;
-                }
-
-                // 2. 倒计时中忽略
-                if (ctx.isTimerPending)
+                if (ctx.isLongPressSuppressed)
                     return CallNextHookEx(ctx.hKeyboardHook, nCode, wParam, lParam);
-
-                // 3. 过滤并触发
-                if (IsContentKey(vk))
-                {
-                    PostMessage(ctx.hMainWnd, WM_KICK_TIMER, 0, 0);
-                }
             }
+            else
+            {
+                ctx.lastVkCode = vk;
+                ctx.isLongPressSuppressed = false;
+            }
+
+            // 2. 倒计时中忽略
+            if (ctx.isTimerPending)
+                return CallNextHookEx(ctx.hKeyboardHook, nCode, wParam, lParam);
+
+            // 3. 过滤并触发
+            if (IsContentKey(vk))
+                PostMessage(ctx.hMainWnd, WM_KICK_TIMER, 0, 0);
         }
         else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
         {
@@ -234,6 +242,51 @@ void DestroyTransparentCursor()
 {
     if (ctx.hGlobalTransCursor)
         DestroyCursor(ctx.hGlobalTransCursor);
+}
+
+// --- 钩子动态管理 ---
+void UpdateHooks(bool enable)
+{
+    if (enable)
+    {
+        // 1. 初始化按键状态快照
+        // 在挂载钩子的瞬间，读取一次系统状态，防止状态不同步
+        ctx.isCtrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        ctx.isAltDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        ctx.isWinDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+
+        // 2. 挂载钩子
+        if (!ctx.hKeyboardHook)
+        {
+            ctx.hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandle(NULL), 0);
+        }
+        if (!ctx.hEventHook)
+        {
+            ctx.hEventHook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH,
+                                             NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        }
+    }
+    else
+    {
+        // 卸载键盘钩子
+        if (ctx.hKeyboardHook)
+        {
+            UnhookWindowsHookEx(ctx.hKeyboardHook);
+            ctx.hKeyboardHook = NULL;
+        }
+        // 卸载桌面事件钩子
+        if (ctx.hEventHook)
+        {
+            UnhookWinEvent(ctx.hEventHook);
+            ctx.hEventHook = NULL;
+        }
+        // 清理状态
+        ctx.lastVkCode = 0;
+        ctx.isLongPressSuppressed = false;
+        ctx.isCtrlDown = false;
+        ctx.isAltDown = false;
+        ctx.isWinDown = false;
+    }
 }
 
 // --- 指针移动监控器状态控制 ---
@@ -304,12 +357,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         Shell_NotifyIcon(NIM_ADD, &ctx.nid);
 
         InitTransparentCursor();
-        // 初始状态下手动检查一下修饰键，防止程序启动时用户正按着 Ctrl 导致状态不一致
-        // ctx.isCtrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        // ctx.isAltDown  = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        // ctx.isWinDown  = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+        // 【初始化时】如果启用，则挂载钩子
+        if (ctx.isEnabled)
+            UpdateHooks(true);
 
-        ctx.hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandle(NULL), 0);
         break;
 
     case WM_KICK_TIMER: // 按键按下，启动隐藏倒计时
@@ -322,9 +373,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         break;
 
+    case WM_DESKTOP_SWITCH:
+        // 桌面切换（UAC/锁屏），强制重置
+        RestoreMouseCursor();
+        ctx.isTimerPending = false;
+        ctx.monitorKeepAlive = 0;
+        // 注意：因为 RestoreMouseCursor 会调用 StopMonitor，所以这里无需手动停止
+        break;
+
     case WM_TIMER:                      // 计时器事件
         if (wParam == ID_TIMER_MONITOR) // 指针移动监控器
         {
+            // 双重保险：如果禁用了，Monitor不应该运行，强制停止
             if (!ctx.isEnabled)
             {
                 StopMonitor();
@@ -353,9 +413,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     }
                     // 处于已隐藏状态，恢复指针
                     if (ctx.isCursorHidden)
-                    {
                         RestoreMouseCursor();
-                    }
                 }
             }
 
@@ -367,7 +425,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     StopMonitor();
             }
         }
-        else if (wParam == ID_TIMER_HIDE_DELAY) // 指针隐藏延时器
+        else if (wParam == ID_TIMER_HIDE_DELAY) // 指针隐藏延时器时间到了
         {
             KillTimer(hwnd, ID_TIMER_HIDE_DELAY);
             HideMouseCursor();
@@ -394,7 +452,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         break;
 
-    case WM_COMMAND: // 右键菜单命令
+    case WM_COMMAND: // 托盘菜单命令
         switch (LOWORD(wParam))
         {
         case ID_TRAY_EXIT: // 退出程序
@@ -402,11 +460,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             break;
         case ID_TRAY_TOGGLE: // 切换启用状态
             ctx.isEnabled = !ctx.isEnabled;
-            if (!ctx.isEnabled)
+            if (!ctx.isEnabled) // 暂停时：恢复光标，停止所有Timer，卸载所有Hook
             {
                 RestoreMouseCursor();
                 KillTimer(hwnd, ID_TIMER_HIDE_DELAY);
                 StopMonitor();
+                UpdateHooks(false); // 卸载钩子
+            }
+            else
+            {
+                // 启用时：挂载Hook
+                UpdateHooks(true); // 挂载钩子
             }
             UpdateTrayIcon();
             break;
@@ -418,8 +482,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_DESTROY: // 窗口销毁
         RestoreMouseCursor();
-        if (ctx.hKeyboardHook)
-            UnhookWindowsHookEx(ctx.hKeyboardHook);
+        UpdateHooks(false); // 确保退出时卸载钩子
         DestroyTransparentCursor();
         Shell_NotifyIcon(NIM_DELETE, &ctx.nid);
         PostQuitMessage(0);
