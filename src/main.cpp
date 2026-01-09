@@ -45,6 +45,7 @@ struct AppContext
     HWND hMainWnd;               // 主窗口句柄
     HCURSOR hGlobalTransCursor;  // 透明指针句柄
     HANDLE hSingleInstanceMutex; // 单实例互斥体句柄
+    UINT uTaskbarCreatedMsg;     // 保存 "TaskbarCreated" 消息ID
 
     // 状态标志
     bool isEnabled;             // 功能启用状态
@@ -70,14 +71,14 @@ struct AppContext
 AppContext ctx = {0};
 
 // 注册表路径和应用程序名称常量
-const wchar_t *REG_PATH = L"Software\\GreenMouseHider"; // 自启标记的注册表路径
-const wchar_t *APP_NAME = L"FuckMouseCursor";           // 应用程序的唯一名称 (用于Mutex和任务计划)
+const wchar_t *REG_PATH = L"Software\\FuckMouseHider"; // 自启标记的注册表路径
+const wchar_t *APP_NAME = L"FuckMouseCursor";          // 应用程序的唯一名称 (用于Mutex和任务计划)
 
 // --- 函数声明 ---
 
 // 窗口过程函数
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-// WinEventHook回调函数
+// 桌面切换事件回调函数
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
 // 键盘钩子回调函数
 LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
@@ -558,12 +559,22 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 // --- 主窗口过程实现 ---
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // 监听任务栏重建消息
+    if (msg == ctx.uTaskbarCreatedMsg)
+    {
+        Shell_NotifyIcon(NIM_ADD, &ctx.nid);
+        return 0;
+    }
+
     switch (msg)
     {
     case WM_CREATE: // 窗口创建
         ctx.isEnabled = true;
         ctx.hMainWnd = hwnd;
         ctx.isAdmin = CheckIsAdmin(); // 初始化时检测权限
+
+        // 注册任务栏重建消息
+        ctx.uTaskbarCreatedMsg = RegisterWindowMessage(L"TaskbarCreated");
 
         ctx.nid.cbSize = sizeof(NOTIFYICONDATA);
         ctx.nid.hWnd = hwnd;
