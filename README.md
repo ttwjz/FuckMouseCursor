@@ -6,7 +6,7 @@
 
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d7.svg)](https://www.microsoft.com/windows/)
 [![Language](https://img.shields.io/badge/language-C%2B%2B17-blue.svg)](https://isocpp.org/)
-[![Size](https://img.shields.io/badge/size-64KB-success.svg)]()
+[![Size](https://img.shields.io/badge/size-52KB-success.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ![on.ico](https://youke3.picui.cn/s1/2026/01/06/695d018684885.ico)
