@@ -5,7 +5,6 @@
 //   g++ main.cpp resource.o -o FuckMouseCursor.exe -s -O2 -mwindows -static -fno-exceptions -fno-rtti
 // ==================================================================================
 
-// TODO: 浮现信息时隐藏
 //  1. 在最前面定义 Unicode，否则 Windows API 会默认用 char* 版本导致报错
 #define UNICODE
 #define _UNICODE
