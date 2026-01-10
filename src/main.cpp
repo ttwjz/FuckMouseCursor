@@ -253,21 +253,11 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, 
 // 初始化透明指针
 void InitTransparentCursor()
 {
-    int w = GetSystemMetrics(SM_CXCURSOR);
-    int h = GetSystemMetrics(SM_CYCURSOR);
-    size_t size = (w * h / 8 + 100);
-    HANDLE hHeap = GetProcessHeap();
-    BYTE *andMask = (BYTE *)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, size);
-    BYTE *xorMask = (BYTE *)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, size);
-    if (andMask && xorMask)
-    {
-        memset(andMask, 0xFF, size);
-        ctx.hGlobalTransCursor = CreateCursor(GetModuleHandle(NULL), 0, 0, w, h, andMask, xorMask);
-    }
-    if (andMask)
-        HeapFree(hHeap, 0, andMask);
-    if (xorMask)
-        HeapFree(hHeap, 0, xorMask);
+    BYTE andMask = 0xFF;
+    BYTE xorMask = 0x00;
+
+    // 创建 1x1 的单色光标
+    ctx.hGlobalTransCursor = CreateCursor(GetModuleHandle(NULL), 0, 0, 1, 1, &andMask, &xorMask);
 }
 
 // 销毁透明指针
