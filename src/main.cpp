@@ -1,4 +1,12 @@
-// 1. 在最前面定义 Unicode，否则 Windows API 会默认用 char* 版本导致报错
+// ==================================================================================
+// 项目名称: FuckMouseCursor (GreenMouseHider)
+// 编译命令:
+//   windres resource.rc -o resource.o
+//   g++ main.cpp resource.o -o FuckMouseCursor.exe -s -O2 -mwindows -static -fno-exceptions -fno-rtti
+// ==================================================================================
+
+// TODO: 浮现信息时隐藏
+//  1. 在最前面定义 Unicode，否则 Windows API 会默认用 char* 版本导致报错
 #define UNICODE
 #define _UNICODE
 // 2. 强制使用 OEM 资源 (用于加载系统光标)
@@ -11,7 +19,7 @@
 #include <windows.h>
 #include <shellapi.h> // For ShellExecuteEx
 
-// 链接指令
+// ---链接指令---
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -22,30 +30,35 @@
 constexpr int WM_TRAYICON = WM_USER + 1;       // 托盘图标消息
 constexpr int WM_KICK_TIMER = WM_USER + 2;     // 自定义消息，用于启动隐藏倒计时
 constexpr int WM_DESKTOP_SWITCH = WM_USER + 3; // 自定义消息，用于在主线程处理桌面切换
-constexpr int ID_TRAY_EXIT = 1001;             // 退出菜单项ID
-constexpr int ID_TRAY_TOGGLE = 1002;           // 启用/暂停菜单项ID
-constexpr int ID_TRAY_AUTOSTART = 1003;        // 开机自启菜单项ID
-constexpr int ID_TRAY_RESTART_ADMIN = 1004;    // 以管理员重启菜单项ID
-constexpr int ID_TIMER_HIDE_DELAY = 101;       // 指针隐藏延时器ID
-constexpr int ID_TIMER_MONITOR = 102;          // 指针移动监控器ID
+
+constexpr int ID_TRAY_EXIT = 1001;          // 退出菜单项ID
+constexpr int ID_TRAY_TOGGLE = 1002;        // 启用/暂停菜单项ID
+constexpr int ID_TRAY_AUTOSTART = 1003;     // 开机自启菜单项ID
+constexpr int ID_TRAY_RESTART_ADMIN = 1004; // 以管理员重启菜单项ID
+
+constexpr int ID_TIMER_HIDE_DELAY = 101; // 指针隐藏延时器ID
+constexpr int ID_TIMER_MONITOR = 102;    // 指针移动监控器ID
 
 constexpr int HIDE_DELAY_MS = 500;                            // 指针隐藏延时500ms
 constexpr int MONITOR_INTERVAL_MS = 100;                      // 指针移动监控器间隔100ms
 constexpr int MONITOR_KEEPALIVE = 2000 / MONITOR_INTERVAL_MS; // 指针移动监控器保活2秒
 constexpr int MOUSE_THRESHOLD = 100;                          // 指针移动阈值 (像素距离的平方)
 
-// --- AppContext 结构体定义 (整合全局变量，内存布局更紧凑) ---
+// --- 全局上下文 ---
 struct AppContext
 {
     // 钩子句柄 (动态管理)
     HHOOK hKeyboardHook;      // 键盘钩子句柄
     HWINEVENTHOOK hEventHook; // 桌面切换事件钩子句柄
 
+    // 加载的图标句柄
+    HICON hIconApp;              // 开启状态图标 (ID 101)
+    HICON hIconPause;            // 暂停状态图标 (ID 102)
     NOTIFYICONDATA nid;          // 托盘图标数据
     HWND hMainWnd;               // 主窗口句柄
     HCURSOR hGlobalTransCursor;  // 透明指针句柄
     HANDLE hSingleInstanceMutex; // 单实例互斥体句柄
-    UINT uTaskbarCreatedMsg;     // 保存 "TaskbarCreated" 消息ID
+    UINT uTaskbarCreatedMsg;     // 任务栏重建消息ID
 
     // 状态标志
     bool isEnabled;             // 功能启用状态
@@ -74,8 +87,11 @@ AppContext ctx = {0};
 const wchar_t *REG_PATH = L"Software\\FuckMouseHider"; // 自启标记的注册表路径
 const wchar_t *APP_NAME = L"FuckMouseCursor";          // 应用程序的唯一名称 (用于Mutex和任务计划)
 
-// --- 函数声明 ---
+// ==================================================================================
+// 函数声明区
+// ==================================================================================
 
+// ---窗口与回调---
 // 窗口过程函数
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 // 桌面切换事件回调函数
@@ -83,196 +99,41 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, 
 // 键盘钩子回调函数
 LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
-// 资源管理
+// ---资源与初始化---
 void InitTransparentCursor();    // 初始化透明指针
 void DestroyTransparentCursor(); // 销毁透明指针
 void InitResources();            // 封装所有资源初始化
 void CleanupResources();         // 封装所有资源清理
+void EnableHighDPI();            // 启用高DPI支持
+bool CheckIsAdmin();             // 检测管理员权限
 
-// 功能控制
+// ---核心功能---
 void UpdateHooks(bool enable);   // 统一管理钩子生命周期
 void HideMouseCursor();          // 隐藏指针
 void RestoreMouseCursor();       // 恢复指针
-void UpdateTrayIcon();           // 更新托盘图标
+void StartMonitor();             // 启动指针移动监控器
+void StopMonitor();              // 停止指针移动监控器
 bool IsContentKey(DWORD vkCode); // 判断是否为内容按键
 
-// 监控器管理
-void StartMonitor(); // 启动指针移动监控器
-void StopMonitor();  // 停止指针移动监控器
-
-// 开机自启管理
+// ---辅助功能---
+void UpdateTrayIcon();                       // 更新托盘图标
 bool IsAutoStart();                          // 检测是否开机自启动
 void ToggleAutoStart();                      // 切换开机自启动状态
+void RestartAsAdmin();                       // 以管理员重启
 bool ExecuteSchTasks(const wchar_t *params); // 执行CMD命令
 
-// 权限与DPI
-bool CheckIsAdmin();   // 检测管理员权限
-void RestartAsAdmin(); // 以管理员重启
-void EnableHighDPI();  // 启用高DPI支持
+// ==================================================================================
+// 核心逻辑实现
+// ==================================================================================
 
-// void InitTransparentCursor();
-// void DestroyTransparentCursor();             // 销毁透明指针
-// void UpdateHooks(bool enable);               // 统一管理钩子生命周期
-// void HideMouseCursor();                      // 隐藏指针
-// void RestoreMouseCursor();                   // 恢复指针
-// void StartMonitor();                         // 启动指针移动监控器
-// void StopMonitor();                          // 停止指针移动监控器
-// void UpdateTrayIcon();                       // 更新托盘图标
-// bool IsAutoStart();                          // 检测是否开机自启动
-// void ToggleAutoStart();                      // 切换开机自启动状态
-// bool IsContentKey(DWORD vkCode);             // 判断是否为内容按键
-// void EnableHighDPI();                        // 启用高DPI支持
-// bool CheckIsAdmin();                         // 检测管理员权限
-// void RestartAsAdmin();                       // 以管理员重启
-// bool ExecuteSchTasks(const wchar_t *params); // 执行CMD命令 (C风格)
-
-// --- 函数定义 (按功能分组) ---
-// --- 资源管理实现 ---
-// 初始化透明指针
-void InitTransparentCursor()
-{
-    int w = GetSystemMetrics(SM_CXCURSOR);
-    int h = GetSystemMetrics(SM_CYCURSOR);
-    size_t size = (w * h / 8 + 100);
-    HANDLE hHeap = GetProcessHeap();
-    BYTE *andMask = (BYTE *)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, size);
-    BYTE *xorMask = (BYTE *)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, size);
-    if (andMask && xorMask)
-    {
-        memset(andMask, 0xFF, size);
-        ctx.hGlobalTransCursor = CreateCursor(GetModuleHandle(NULL), 0, 0, w, h, andMask, xorMask);
-    }
-    if (andMask)
-        HeapFree(hHeap, 0, andMask);
-    if (xorMask)
-        HeapFree(hHeap, 0, xorMask);
-}
-
-// 销毁透明指针
-void DestroyTransparentCursor()
-{
-    if (ctx.hGlobalTransCursor)
-        DestroyCursor(ctx.hGlobalTransCursor);
-}
-
-// 封装所有资源初始化
-void InitResources()
-{
-    InitTransparentCursor();
-}
-
-// 封装所有资源清理
-void CleanupResources()
-{
-    DestroyTransparentCursor();
-}
-
-// --- 钩子与事件管理实现 ---
-// 统一管理钩子生命周期
-void UpdateHooks(bool enable)
-{
-    if (enable)
-    {
-        // 1. 初始化按键状态快照 (在挂载钩子瞬间读取系统状态)
-        ctx.isCtrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        ctx.isAltDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        ctx.isWinDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
-
-        // 2. 挂载钩子
-        if (!ctx.hKeyboardHook)
-        {
-            ctx.hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandle(NULL), 0);
-        }
-        if (!ctx.hEventHook)
-        {
-            ctx.hEventHook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH,
-                                             NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-        }
-    }
-    else
-    {
-        // 卸载钩子
-        if (ctx.hKeyboardHook)
-        {
-            UnhookWindowsHookEx(ctx.hKeyboardHook);
-            ctx.hKeyboardHook = NULL;
-        }
-        if (ctx.hEventHook)
-        {
-            UnhookWinEvent(ctx.hEventHook);
-            ctx.hEventHook = NULL;
-        }
-        // 清理状态
-        ctx.lastVkCode = 0;
-        ctx.isLongPressSuppressed = false;
-        ctx.isCtrlDown = false;
-        ctx.isAltDown = false;
-        ctx.isWinDown = false;
-    }
-}
-
-// 更新托盘图标和提示
-void UpdateTrayIcon()
-{
-    int iconId = ctx.isEnabled ? 101 : 102;
-    ctx.nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(iconId));
-    if (!ctx.nid.hIcon)
-        ctx.nid.hIcon = LoadIcon(NULL, ctx.isEnabled ? IDI_APPLICATION : IDI_SHIELD);
-
-    // 在提示文本中增加管理员标识
-    wchar_t szTip[128];
-    wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
-             ctx.isEnabled ? L"已开启" : L"已暂停",
-             ctx.isAdmin ? L" [Admin]" : L"");
-    wcscpy_s(ctx.nid.szTip, szTip);
-    Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
-}
-
-// --- 指针隐藏/恢复逻辑实现 ---
-// 隐藏指针
-void HideMouseCursor()
-{
-    if (ctx.isCursorHidden || !ctx.hGlobalTransCursor)
-        return;
-    GetCursorPos(&ctx.ptLastPos); // 记录当前位置
-
-    // 替换所有标准系统光标
-    const int cursors[] = {
-        OCR_NORMAL, OCR_IBEAM, OCR_HAND, OCR_WAIT, OCR_APPSTARTING,
-        OCR_SIZENWSE, OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL,
-        OCR_NO, OCR_UP, 32651 /*OCR_HELP*/
-    };
-    for (int id : cursors)
-        SetSystemCursor(CopyCursor(ctx.hGlobalTransCursor), id);
-
-    // 强制刷新光标：原地设置光标位置
-    // SetCursorPos(ctx.ptLastPos.x, ctx.ptLastPos.y);
-
-    ctx.isCursorHidden = true;
-    ctx.isTimerPending = false;
-}
-
-// 恢复指针
-void RestoreMouseCursor()
-{
-    if (!ctx.isCursorHidden)
-        return;
-    SystemParametersInfo(SPI_SETCURSORS, 0, NULL, 0);
-    ctx.isCursorHidden = false;
-    ctx.isTimerPending = false;
-    StopMonitor();
-}
-
-// 按键过滤 (性能优化版)
+// 按键过滤
 bool IsContentKey(DWORD vkCode)
 {
-    // 1. 【组合键拦截】(零系统调用)
-    // 直接检查内存中的状态位
-    // 注意：Alt 键在钩子中有时会触发 WM_SYSKEYDOWN，也要通过状态位判断
+    // 1. 组合键拦截
     if (ctx.isCtrlDown || ctx.isAltDown || ctx.isWinDown)
         return false;
 
-    // 2. 【白名单匹配】
+    // 2. 白名单匹配 (整数比较，极快)
 
     // A-Z (0x41 - 0x5A)
     if (vkCode >= 0x41 && vkCode <= 0x5A)
@@ -304,7 +165,6 @@ bool IsContentKey(DWORD vkCode)
         return true;
 
     // 标点符号 (OEM Keys)
-    // Windows 定义的符号键范围比较散，这是最主要的几个段
     if (vkCode >= VK_OEM_1 && vkCode <= VK_OEM_8)
         return true;
     if (vkCode == VK_OEM_102)
@@ -314,186 +174,7 @@ bool IsContentKey(DWORD vkCode)
     return false;
 }
 
-// --- 监控器管理实现 ---
-// 启动指针移动监控器
-void StartMonitor()
-{
-    if (!ctx.isMonitorRunning)
-    {
-        GetCursorPos(&ctx.ptLastPos); // 启动前同步坐标
-        SetTimer(ctx.hMainWnd, ID_TIMER_MONITOR, MONITOR_INTERVAL_MS, NULL);
-        ctx.isMonitorRunning = true;
-    }
-}
-
-// 停止指针移动监控器
-void StopMonitor()
-{
-    if (ctx.isMonitorRunning)
-    {
-        KillTimer(ctx.hMainWnd, ID_TIMER_MONITOR);
-        ctx.isMonitorRunning = false;
-    }
-}
-
-// --- 开机自启管理实现 ---
-// 执行CMD命令 (C风格)
-bool ExecuteSchTasks(const wchar_t *params)
-{
-    SHELLEXECUTEINFO sei = {sizeof(sei)};
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpVerb = L"runas";
-    sei.lpFile = L"schtasks.exe";
-    sei.lpParameters = params;
-    sei.nShow = SW_HIDE;
-
-    if (ShellExecuteEx(&sei))
-    {
-        WaitForSingleObject(sei.hProcess, 5000);
-        DWORD exitCode = 0;
-        GetExitCodeProcess(sei.hProcess, &exitCode);
-        CloseHandle(sei.hProcess);
-        return (exitCode == 0);
-    }
-    return false;
-}
-
-// 检测是否开机自启
-bool IsAutoStart()
-{
-    HKEY hKey;
-    if (RegOpenKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-    {
-        DWORD value = 0, size = sizeof(value);
-        RegQueryValueEx(hKey, L"AutoStart", NULL, NULL, (LPBYTE)&value, &size);
-        RegCloseKey(hKey);
-        return (value == 1);
-    }
-    return false;
-}
-
-// 切换开机自启动状态
-void ToggleAutoStart()
-{
-    if (!ctx.isAdmin)
-    {
-        MessageBox(NULL, L"设置开机自启（最高权限）需要管理员权限，请先以管理员身份重启程序。", L"权限不足", MB_OK | MB_ICONWARNING);
-        return;
-    }
-
-    bool enable = !IsAutoStart();
-    wchar_t exePath[MAX_PATH];
-    GetModuleFileName(NULL, exePath, MAX_PATH);
-    wchar_t cmd[1024];
-
-    if (enable)
-    {
-        wsprintf(cmd, L"/Create /TN \"%s_AutoRun\" /TR \"\\\"%s\\\"\" /SC ONLOGON /RL HIGHEST /F", APP_NAME, exePath);
-        if (ExecuteSchTasks(cmd))
-        {
-            HKEY hKey;
-            if (RegCreateKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
-            {
-                DWORD value = 1;
-                RegSetValueEx(hKey, L"AutoStart", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
-                RegCloseKey(hKey);
-            }
-        }
-    }
-    else
-    {
-        // 删除任务
-        wsprintf(cmd, L"/Delete /TN \"%s_AutoRun\" /F", APP_NAME);
-        ExecuteSchTasks(cmd);
-
-        // 删除标记
-        HKEY hKey;
-        if (RegOpenKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-        {
-            RegDeleteValue(hKey, L"AutoStart");
-            RegCloseKey(hKey);
-        }
-    }
-}
-
-// --- 权限与DPI实现 ---
-// 检测管理员权限
-bool CheckIsAdmin()
-{
-    BOOL fIsRunAsAdmin = FALSE;
-    HANDLE hToken = NULL;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
-    {
-        TOKEN_ELEVATION elevation;
-        DWORD cbSize = sizeof(TOKEN_ELEVATION);
-        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &cbSize))
-        {
-            fIsRunAsAdmin = elevation.TokenIsElevated;
-        }
-        CloseHandle(hToken);
-    }
-    return fIsRunAsAdmin;
-}
-
-// 以管理员身份重启
-void RestartAsAdmin()
-{
-    wchar_t szPath[MAX_PATH];
-    if (GetModuleFileName(NULL, szPath, MAX_PATH))
-    {
-        if (ctx.hSingleInstanceMutex)
-        {
-            CloseHandle(ctx.hSingleInstanceMutex);
-            ctx.hSingleInstanceMutex = NULL;
-        }
-
-        SHELLEXECUTEINFO sei = {sizeof(sei)};
-        sei.cbSize = sizeof(SHELLEXECUTEINFO);
-        sei.lpVerb = L"runas";
-        sei.lpFile = szPath;
-        sei.hwnd = NULL;
-        sei.nShow = SW_NORMAL;
-
-        if (ShellExecuteEx(&sei))
-        {
-            PostQuitMessage(0);
-        }
-        else
-        {
-            ctx.hSingleInstanceMutex = CreateMutex(NULL, TRUE, L"Global\\FuckMouseCursorMutex");
-        }
-    }
-}
-
-// 启用高DPI支持
-void EnableHighDPI()
-{
-    HMODULE hUser32 = GetModuleHandle(L"user32.dll");
-    typedef BOOL(WINAPI * PFN_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
-    if (hUser32)
-    {
-        auto pfn = (PFN_SetProcessDpiAwarenessContext)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
-        if (pfn)
-        {
-            pfn((DPI_AWARENESS_CONTEXT)-4);
-            return;
-        }
-    }
-    SetProcessDPIAware();
-}
-
-// --- 回调函数实现 (WinEventProc, KeyboardProc 在顶部已声明) ---
-// 桌面切换事件回调
-// 当进入/退出 UAC、锁屏、Ctrl+Alt+Del 时触发
-void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
-{
-    if (event == EVENT_SYSTEM_DESKTOPSWITCH)
-    {
-        PostMessage(ctx.hMainWnd, WM_DESKTOP_SWITCH, 0, 0);
-    }
-}
-
-// 键盘钩子
+// 键盘钩子回调
 LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     if (nCode == HC_ACTION)
@@ -501,7 +182,7 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
         KBDLLHOOKSTRUCT *pKbd = (KBDLLHOOKSTRUCT *)lParam;
         DWORD vk = pKbd->vkCode;
 
-        // 状态维护
+        // 功能键状态维护
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
         {
             if (vk == VK_LCONTROL || vk == VK_RCONTROL)
@@ -556,7 +237,199 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(ctx.hKeyboardHook, nCode, wParam, lParam);
 }
 
-// --- 主窗口过程实现 ---
+// 桌面切换事件回调
+// 当进入/退出 UAC、锁屏、Ctrl+Alt+Del 时触发
+void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
+{
+    if (event == EVENT_SYSTEM_DESKTOPSWITCH)
+    {
+        PostMessage(ctx.hMainWnd, WM_DESKTOP_SWITCH, 0, 0);
+    }
+}
+
+// ==================================================================================
+// 资源与状态管理
+// ==================================================================================
+
+// 初始化透明指针
+void InitTransparentCursor()
+{
+    int w = GetSystemMetrics(SM_CXCURSOR);
+    int h = GetSystemMetrics(SM_CYCURSOR);
+    size_t size = (w * h / 8 + 100);
+    HANDLE hHeap = GetProcessHeap();
+    BYTE *andMask = (BYTE *)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, size);
+    BYTE *xorMask = (BYTE *)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, size);
+    if (andMask && xorMask)
+    {
+        memset(andMask, 0xFF, size);
+        ctx.hGlobalTransCursor = CreateCursor(GetModuleHandle(NULL), 0, 0, w, h, andMask, xorMask);
+    }
+    if (andMask)
+        HeapFree(hHeap, 0, andMask);
+    if (xorMask)
+        HeapFree(hHeap, 0, xorMask);
+}
+
+// 销毁透明指针
+void DestroyTransparentCursor()
+{
+    if (ctx.hGlobalTransCursor)
+        DestroyCursor(ctx.hGlobalTransCursor);
+}
+
+// 封装所有资源初始化
+void InitResources()
+{
+
+    // 1. 初始化透明光标
+    InitTransparentCursor();
+
+    // 2. 预加载图标
+    ctx.hIconApp = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(101));
+    if (!ctx.hIconApp)
+        ctx.hIconApp = LoadIcon(NULL, IDI_APPLICATION); // 回退方案
+
+    ctx.hIconPause = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(102));
+    if (!ctx.hIconPause)
+        ctx.hIconPause = LoadIcon(NULL, IDI_SHIELD); // 回退方案
+}
+
+// 封装所有资源清理
+void CleanupResources()
+{
+    // 1. 销毁透明光标
+    DestroyTransparentCursor();
+    // 2. 销毁图标资源
+    // DestroyIcon 只能销毁 CreateIcon/CreateIconIndirect 创建的图标
+    // 对于 LoadIcon 加载的共享图标（Shared Icon），系统会自动回收，但显式 Destroy 也是安全的且符合 RAII 精神
+    // 如果未来改为 LoadImage (非共享)，这一步是必须的
+    if (ctx.hIconApp)
+    {
+        DestroyIcon(ctx.hIconApp);
+        ctx.hIconApp = NULL;
+    }
+    if (ctx.hIconPause)
+    {
+        DestroyIcon(ctx.hIconPause);
+        ctx.hIconPause = NULL;
+    }
+}
+
+// 统一管理钩子生命周期
+void UpdateHooks(bool enable)
+{
+    if (enable)
+    {
+        // 1. 初始化按键状态快照 (在挂载钩子瞬间读取系统状态)
+        ctx.isCtrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        ctx.isAltDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        ctx.isWinDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 || (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+
+        // 2. 挂载钩子
+        if (!ctx.hKeyboardHook)
+        {
+            ctx.hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandle(NULL), 0);
+        }
+        if (!ctx.hEventHook)
+        {
+            ctx.hEventHook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH,
+                                             NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+        }
+    }
+    else
+    {
+        // 卸载钩子
+        if (ctx.hKeyboardHook)
+        {
+            UnhookWindowsHookEx(ctx.hKeyboardHook);
+            ctx.hKeyboardHook = NULL;
+        }
+        if (ctx.hEventHook)
+        {
+            UnhookWinEvent(ctx.hEventHook);
+            ctx.hEventHook = NULL;
+        }
+        // 清理状态
+        ctx.lastVkCode = 0;
+        ctx.isLongPressSuppressed = false;
+        ctx.isCtrlDown = false;
+        ctx.isAltDown = false;
+        ctx.isWinDown = false;
+    }
+}
+
+// 启动指针移动监控器
+void StartMonitor()
+{
+    if (!ctx.isMonitorRunning)
+    {
+        GetCursorPos(&ctx.ptLastPos); // 启动前同步坐标
+        SetTimer(ctx.hMainWnd, ID_TIMER_MONITOR, MONITOR_INTERVAL_MS, NULL);
+        ctx.isMonitorRunning = true;
+    }
+}
+
+// 停止指针移动监控器
+void StopMonitor()
+{
+    if (ctx.isMonitorRunning)
+    {
+        KillTimer(ctx.hMainWnd, ID_TIMER_MONITOR);
+        ctx.isMonitorRunning = false;
+    }
+}
+
+// 隐藏指针
+void HideMouseCursor()
+{
+    if (ctx.isCursorHidden || !ctx.hGlobalTransCursor)
+        return;
+    GetCursorPos(&ctx.ptLastPos); // 记录当前位置
+
+    // 替换所有标准系统光标
+    const int cursors[] = {
+        OCR_NORMAL, OCR_IBEAM, OCR_HAND, OCR_WAIT, OCR_APPSTARTING,
+        OCR_SIZENWSE, OCR_SIZENESW, OCR_SIZEWE, OCR_SIZENS, OCR_SIZEALL,
+        OCR_NO, OCR_UP, 32651 /*OCR_HELP*/
+    };
+    for (int id : cursors)
+        SetSystemCursor(CopyCursor(ctx.hGlobalTransCursor), id);
+
+    ctx.isCursorHidden = true;
+    ctx.isTimerPending = false;
+}
+
+// 恢复指针
+void RestoreMouseCursor()
+{
+    if (!ctx.isCursorHidden)
+        return;
+    SystemParametersInfo(SPI_SETCURSORS, 0, NULL, 0);
+    ctx.isCursorHidden = false;
+    ctx.isTimerPending = false;
+    StopMonitor();
+}
+
+// ==================================================================================
+// 窗口过程与辅助
+// ==================================================================================
+
+// 更新托盘图标和提示
+void UpdateTrayIcon()
+{
+    ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
+
+    // 在提示文本中增加管理员标识
+    wchar_t szTip[128];
+    wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
+             ctx.isEnabled ? L"已开启" : L"已暂停",
+             ctx.isAdmin ? L" [Admin]" : L"");
+    wcscpy_s(ctx.nid.szTip, szTip);
+    Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
+}
+
+// 主窗口过程实现
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     // 监听任务栏重建消息
@@ -571,10 +444,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CREATE: // 窗口创建
         ctx.isEnabled = true;
         ctx.hMainWnd = hwnd;
-        ctx.isAdmin = CheckIsAdmin(); // 初始化时检测权限
+        ctx.isAdmin = CheckIsAdmin();                                      // 初始化时检测权限
+        ctx.uTaskbarCreatedMsg = RegisterWindowMessage(L"TaskbarCreated"); // 注册任务栏重建消息
 
-        // 注册任务栏重建消息
-        ctx.uTaskbarCreatedMsg = RegisterWindowMessage(L"TaskbarCreated");
+        InitResources(); // 初始化资源
 
         ctx.nid.cbSize = sizeof(NOTIFYICONDATA);
         ctx.nid.hWnd = hwnd;
@@ -584,7 +457,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         UpdateTrayIcon();
         Shell_NotifyIcon(NIM_ADD, &ctx.nid);
 
-        InitResources();
         if (ctx.isEnabled)
             UpdateHooks(true);
         break;
@@ -711,10 +583,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_DESTROY: // 窗口销毁
-        RestoreMouseCursor();
-        UpdateHooks(false);
-        CleanupResources();
-        Shell_NotifyIcon(NIM_DELETE, &ctx.nid);
         PostQuitMessage(0);
         break;
 
@@ -724,13 +592,186 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+// ==================================================================================
+// 系统功能封装
+// ==================================================================================
+
+// 检测管理员权限
+bool CheckIsAdmin()
+{
+    BOOL fIsRunAsAdmin = FALSE;
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+    {
+        TOKEN_ELEVATION elevation;
+        DWORD cbSize = sizeof(TOKEN_ELEVATION);
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &cbSize))
+        {
+            fIsRunAsAdmin = elevation.TokenIsElevated;
+        }
+        CloseHandle(hToken);
+    }
+    return fIsRunAsAdmin;
+}
+
+// 以管理员身份重启
+void RestartAsAdmin()
+{
+    wchar_t szPath[MAX_PATH];
+    if (GetModuleFileName(NULL, szPath, MAX_PATH))
+    {
+        if (ctx.hSingleInstanceMutex)
+        {
+            CloseHandle(ctx.hSingleInstanceMutex);
+            ctx.hSingleInstanceMutex = NULL;
+        }
+
+        SHELLEXECUTEINFO sei = {sizeof(sei)};
+        sei.cbSize = sizeof(SHELLEXECUTEINFO);
+        sei.lpVerb = L"runas";
+        sei.lpFile = szPath;
+        sei.hwnd = NULL;
+        sei.nShow = SW_NORMAL;
+
+        if (ShellExecuteEx(&sei))
+        {
+            PostQuitMessage(0);
+        }
+        else
+        {
+            ctx.hSingleInstanceMutex = CreateMutex(NULL, TRUE, L"Global\\FuckMouseCursorMutex");
+        }
+    }
+}
+
+// 执行CMD命令 (C风格)
+bool ExecuteSchTasks(const wchar_t *params)
+{
+    SHELLEXECUTEINFO sei = {sizeof(sei)};
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = L"schtasks.exe";
+    sei.lpParameters = params;
+    sei.nShow = SW_HIDE;
+
+    if (ShellExecuteEx(&sei))
+    {
+        WaitForSingleObject(sei.hProcess, 5000);
+        DWORD exitCode = 0;
+        GetExitCodeProcess(sei.hProcess, &exitCode);
+        CloseHandle(sei.hProcess);
+        return (exitCode == 0);
+    }
+    return false;
+}
+
+// 检测是否开机自启
+bool IsAutoStart()
+{
+    HKEY hKey;
+    if (RegOpenKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        DWORD value = 0, size = sizeof(value);
+        RegQueryValueEx(hKey, L"AutoStart", NULL, NULL, (LPBYTE)&value, &size);
+        RegCloseKey(hKey);
+        return (value == 1);
+    }
+    return false;
+}
+
+// 切换开机自启动状态
+void ToggleAutoStart()
+{
+    if (!ctx.isAdmin)
+    {
+        MessageBox(NULL, L"设置开机自启（最高权限）需要管理员权限，请先以管理员身份重启程序。", L"权限不足", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    bool enable = !IsAutoStart();
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileName(NULL, exePath, MAX_PATH);
+    wchar_t cmd[1024];
+
+    if (enable)
+    {
+        wsprintf(cmd, L"/Create /TN \"%s_AutoRun\" /TR \"\\\"%s\\\"\" /SC ONLOGON /RL HIGHEST /F", APP_NAME, exePath);
+        if (ExecuteSchTasks(cmd))
+        {
+            HKEY hKey;
+            if (RegCreateKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+            {
+                DWORD value = 1;
+                RegSetValueEx(hKey, L"AutoStart", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+                RegCloseKey(hKey);
+            }
+        }
+    }
+    else
+    {
+        // 删除任务
+        wsprintf(cmd, L"/Delete /TN \"%s_AutoRun\" /F", APP_NAME);
+        ExecuteSchTasks(cmd);
+
+        // 删除标记
+        HKEY hKey;
+        if (RegOpenKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
+        {
+            RegDeleteValue(hKey, L"AutoStart");
+            RegCloseKey(hKey);
+        }
+    }
+}
+
+// 启用高DPI支持
+void EnableHighDPI()
+{
+    HMODULE hUser32 = GetModuleHandle(L"user32.dll");
+    typedef BOOL(WINAPI * PFN_SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT);
+    if (hUser32)
+    {
+        auto pfn = (PFN_SetProcessDpiAwarenessContext)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+        if (pfn)
+        {
+            pfn((DPI_AWARENESS_CONTEXT)-4);
+            return;
+        }
+    }
+    SetProcessDPIAware();
+}
+
+// ==================================================================================
+// 主入口 (RAII 管理)
+// ==================================================================================
+
+// RAII 资源管理类
+class AppGuard
+{
+public:
+    AppGuard() {}
+    ~AppGuard()
+    {
+        RestoreMouseCursor();
+        UpdateHooks(false);
+        Shell_NotifyIcon(NIM_DELETE, &ctx.nid);
+        CleanupResources();
+        if (ctx.hSingleInstanceMutex)
+        {
+            CloseHandle(ctx.hSingleInstanceMutex);
+            ctx.hSingleInstanceMutex = NULL;
+        }
+        Sleep(100); // 给 Explorer 一点时间处理 NIM_DELETE 消息
+    }
+};
+
 // --- 主程序入口点 ---
 int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int)
 {
     EnableHighDPI(); // 启用高DPI支持
+    AppGuard guard;  // RAII 守卫，析构时自动清理资源
 
     // 单实例互斥体
-    ctx.hSingleInstanceMutex = CreateMutex(NULL, TRUE, L"Global\\FuckMouseCursorMutex");
+    ctx.hSingleInstanceMutex = CreateMutex(NULL, TRUE, L"Local\\FuckMouseCursorMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
     {
         MessageBox(NULL, L"程序已经在运行了！", L"提示", MB_OK | MB_ICONINFORMATION);
@@ -738,10 +779,7 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int)
     }
 
     // 注册窗口类
-    WNDCLASS wc = {0};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = h;
-    wc.lpszClassName = L"FuckMouseCursorCls";
+    WNDCLASS wc = {0, WndProc, 0, 0, h, 0, 0, 0, 0, L"FuckMouseCursorCls"};
     RegisterClass(&wc);
 
     // 创建隐藏窗口
@@ -757,8 +795,5 @@ int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int)
         DispatchMessage(&msg);
     }
 
-    // 退出时释放互斥体
-    if (ctx.hSingleInstanceMutex)
-        CloseHandle(ctx.hSingleInstanceMutex);
     return 0;
 }
