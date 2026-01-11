@@ -83,8 +83,8 @@ struct AppContext
 AppContext ctx = {0};
 
 // 注册表路径和应用程序名称常量
-const wchar_t *REG_PATH = L"Software\\FuckMouseHider"; // 自启标记的注册表路径
-const wchar_t *APP_NAME = L"FuckMouseCursor";          // 应用程序的唯一名称 (用于Mutex和任务计划)
+const wchar_t *REG_PATH = L"Software\\FuckMouseCursor"; // 自启标记的注册表路径
+const wchar_t *APP_NAME = L"FuckMouseCursor";           // 应用程序的唯一名称 (用于Mutex和任务计划)
 
 // ==================================================================================
 // 函数声明区
@@ -115,11 +115,12 @@ void StopMonitor();              // 停止指针移动监控器
 bool IsContentKey(DWORD vkCode); // 判断是否为内容按键
 
 // ---辅助功能---
-void UpdateTrayIcon();                       // 更新托盘图标
-bool IsAutoStart();                          // 检测是否开机自启动
-void ToggleAutoStart();                      // 切换开机自启动状态
-void RestartAsAdmin();                       // 以管理员重启
-bool ExecuteSchTasks(const wchar_t *params); // 执行CMD命令
+void UpdateTrayIcon();  // 更新托盘图标
+bool IsAutoStart();     // 检测是否开机自启动
+void ToggleAutoStart(); // 切换开机自启动状态
+void RestartAsAdmin();  // 以管理员重启
+// 执行外部命令
+bool ExecuteCommand(const wchar_t *file, const wchar_t *params, bool wait);
 
 // ==================================================================================
 // 核心逻辑实现
@@ -633,23 +634,33 @@ void RestartAsAdmin()
     }
 }
 
-// 执行CMD命令 (C风格)
-bool ExecuteSchTasks(const wchar_t *params)
+// 以管理员权限执行命令
+bool ExecuteCommand(const wchar_t *file, const wchar_t *params, bool wait)
 {
     SHELLEXECUTEINFO sei = {sizeof(sei)};
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS; // 以此获取句柄
     sei.lpVerb = L"runas";
-    sei.lpFile = L"schtasks.exe";
+    sei.lpFile = file;
     sei.lpParameters = params;
     sei.nShow = SW_HIDE;
 
     if (ShellExecuteEx(&sei))
     {
-        WaitForSingleObject(sei.hProcess, 5000);
-        DWORD exitCode = 0;
-        GetExitCodeProcess(sei.hProcess, &exitCode);
-        CloseHandle(sei.hProcess);
-        return (exitCode == 0);
+        if (wait)
+        {
+            // 如果需要等待（比如 schtasks），则阻塞直到结束
+            WaitForSingleObject(sei.hProcess, 5000); // 最多等5秒
+            DWORD exitCode = 0;
+            GetExitCodeProcess(sei.hProcess, &exitCode);
+            CloseHandle(sei.hProcess);
+            return (exitCode == 0);
+        }
+        else
+        {
+            // 如果不需要等待（比如 powershell），直接关闭句柄并返回成功
+            CloseHandle(sei.hProcess);
+            return true;
+        }
     }
     return false;
 }
@@ -680,13 +691,23 @@ void ToggleAutoStart()
     bool enable = !IsAutoStart();
     wchar_t exePath[MAX_PATH];
     GetModuleFileName(NULL, exePath, MAX_PATH);
-    wchar_t cmd[1024];
+    wchar_t cmd[2048];
 
     if (enable)
     {
+        // 1. 用 schtasks 创建基础任务
         wsprintf(cmd, L"/Create /TN \"%s_AutoRun\" /TR \"\\\"%s\\\"\" /SC ONLOGON /RL HIGHEST /F", APP_NAME, exePath);
-        if (ExecuteSchTasks(cmd))
+        if (ExecuteCommand(L"schtasks.exe", cmd, true))
         {
+            // 2. 调用 PowerShell 修改电源设置
+            wsprintf(cmd,
+                     L"-NoLogo -NonInteractive -Command "
+                     L"\"$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0; "
+                     L"Set-ScheduledTask -TaskName '%s_AutoRun' -Settings $settings\"",
+                     APP_NAME);
+            ExecuteCommand(L"powershell.exe", cmd, false);
+
+            // 3. 写入注册表标记
             HKEY hKey;
             if (RegCreateKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
             {
@@ -700,9 +721,9 @@ void ToggleAutoStart()
     {
         // 删除任务
         wsprintf(cmd, L"/Delete /TN \"%s_AutoRun\" /F", APP_NAME);
-        ExecuteSchTasks(cmd);
+        ExecuteCommand(L"schtasks.exe", cmd, true);
 
-        // 删除标记
+        // 删除注册表标记
         HKEY hKey;
         if (RegOpenKeyEx(HKEY_CURRENT_USER, REG_PATH, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
         {
