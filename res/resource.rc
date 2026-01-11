@@ -9,8 +9,8 @@
 
 // 2. 版本信息资源
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,1,1
-PRODUCTVERSION  1,1,1
+FILEVERSION     1,1,2
+PRODUCTVERSION  1,1,2
 FILEFLAGSMASK   0x3fL
 #ifdef _DEBUG
 FILEFLAGS       0x1L
@@ -27,12 +27,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Mr.Wu Studio"
             VALUE "FileDescription",  "去你的鼠标指针"
-            VALUE "FileVersion",      "1.1.1"
+            VALUE "FileVersion",      "1.1.2"
             VALUE "InternalName",     "MouseHider"
             VALUE "LegalCopyright",   "Copyright (C) 2026 Zhan"
             VALUE "OriginalFilename", "FuckMouseCursor.exe"
             VALUE "ProductName",      "Fuck Mouse Cursor"
-            VALUE "ProductVersion",   "1.1.1"
+            VALUE "ProductVersion",   "1.1.2"
         END
     END
     BLOCK "VarFileInfo"
