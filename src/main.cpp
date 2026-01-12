@@ -119,8 +119,7 @@ void StopMonitor();              // 停止指针移动监控器
 bool IsContentKey(DWORD vkCode); // 判断是否为内容按键
 
 // ---辅助功能---
-void UpdateTrayIcon();  // 更新托盘图标
-bool TryAddTrayIcon();  // 尝试添加托盘图标
+bool UpdateTrayIcon();  // 更新托盘图标
 bool IsAutoStart();     // 检测是否开机自启动
 void ToggleAutoStart(); // 切换开机自启动状态
 void RestartAsAdmin();  // 以管理员重启
@@ -416,9 +415,10 @@ void RestoreMouseCursor()
 // 窗口过程与辅助
 // ==================================================================================
 
-// 尝试添加托盘图标, 成功返回 true
-bool TryAddTrayIcon()
+// 更新托盘图标和提示
+bool UpdateTrayIcon()
 {
+    // 1. 准备数据 (公共逻辑)
     ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
     wchar_t szTip[128];
     wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
@@ -426,28 +426,22 @@ bool TryAddTrayIcon()
              ctx.isAdmin ? L" [Admin]" : L"");
     wcscpy_s(ctx.nid.szTip, szTip);
 
-    // 如果添加成功，或者已经是修改模式（返回TRUE），则标记成功
-    if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
-    {
-        ctx.isIconAdded = true;
-        return true;
-    }
-    return false;
-}
-
-// 更新托盘图标和提示
-void UpdateTrayIcon()
-{
+    // 2. 根据状态决定动作
     if (ctx.isIconAdded)
     {
-        ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
-        // 在提示文本中增加管理员标识
-        wchar_t szTip[128];
-        wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
-                 ctx.isEnabled ? L"已开启" : L"已暂停",
-                 ctx.isAdmin ? L" [Admin]" : L"");
-        wcscpy_s(ctx.nid.szTip, szTip);
+        // 已经添加过，执行更新
         Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
+        return true;
+    }
+    else
+    {
+        // 尚未添加，执行添加
+        if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
+        {
+            ctx.isIconAdded = true; // 标记成功
+            return true;
+        }
+        return false; // 添加失败 (Explorer可能还没准备好)
     }
 }
 
@@ -457,6 +451,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     // 监听任务栏重建消息
     if (msg == ctx.uTaskbarCreatedMsg)
     {
+        ctx.isIconAdded = false; // 强制标记为未添加，触发 NIM_ADD
         Shell_NotifyIcon(NIM_ADD, &ctx.nid);
         return 0;
     }
@@ -478,7 +473,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         ctx.nid.uCallbackMessage = WM_TRAYICON;
 
         // 尝试添加图标，如果失败（开机启动太快），启动重试定时器
-        if (!TryAddTrayIcon())
+        if (!UpdateTrayIcon())
         {
             ctx.iconRetryCount = 0;
             SetTimer(hwnd, ID_TIMER_RETRY_ICON, 1000, NULL); // 每1秒重试一次
@@ -551,7 +546,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else if (wParam == ID_TIMER_RETRY_ICON) // 重试添加托盘图标回调
         {
-            if (TryAddTrayIcon())
+            if (UpdateTrayIcon())
             {
                 KillTimer(hwnd, ID_TIMER_RETRY_ICON); // 成功添加后停止重试
             }
