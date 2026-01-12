@@ -37,11 +37,13 @@ constexpr int ID_TRAY_RESTART_ADMIN = 1004; // 以管理员重启菜单项ID
 
 constexpr int ID_TIMER_HIDE_DELAY = 101; // 指针隐藏延时器ID
 constexpr int ID_TIMER_MONITOR = 102;    // 指针移动监控器ID
+constexpr int ID_TIMER_RETRY_ICON = 103; // 图标重试定时器
 
 constexpr int HIDE_DELAY_MS = 500;                            // 指针隐藏延时500ms
 constexpr int MONITOR_INTERVAL_MS = 100;                      // 指针移动监控器间隔100ms
 constexpr int MONITOR_KEEPALIVE = 2000 / MONITOR_INTERVAL_MS; // 指针移动监控器保活2秒
 constexpr int MOUSE_THRESHOLD = 100;                          // 指针移动阈值 (像素距离的平方)
+constexpr int ICON_RETRY_MAX = 60;                            // 图标重试最大次数 (60秒)
 
 // --- 全局上下文 ---
 struct AppContext
@@ -66,6 +68,7 @@ struct AppContext
     bool isMonitorRunning;      // 100ms指针移动监控器是否运行
     bool isLongPressSuppressed; // 长按抑制标记
     bool isAdmin;               // 当前是否为管理员权限
+    bool isIconAdded;           // 托盘图标是否添加成功
 
     // 状态追踪变量 (用于 IsContentKey)
     bool isCtrlDown;
@@ -75,6 +78,7 @@ struct AppContext
     // bool isShiftDown;
 
     int monitorKeepAlive; // 监控器保活计数
+    int iconRetryCount;   // 托盘图标添加重试计数
     DWORD lastVkCode;     // 上一次按键VK (用于长按检测)
     POINT ptLastPos;      // 上一次鼠标坐标 (用于移动检测)
 };
@@ -116,6 +120,7 @@ bool IsContentKey(DWORD vkCode); // 判断是否为内容按键
 
 // ---辅助功能---
 void UpdateTrayIcon();  // 更新托盘图标
+bool TryAddTrayIcon();  // 尝试添加托盘图标
 bool IsAutoStart();     // 检测是否开机自启动
 void ToggleAutoStart(); // 切换开机自启动状态
 void RestartAsAdmin();  // 以管理员重启
@@ -352,11 +357,16 @@ void UpdateHooks(bool enable)
 // 启动指针移动监控器
 void StartMonitor()
 {
-    if (!ctx.isMonitorRunning)
+    GetCursorPos(&ctx.ptLastPos); // 启动前同步坐标
+    // 尝试启动定时器，根据返回值判断是否成功
+    if (SetTimer(ctx.hMainWnd, ID_TIMER_MONITOR, MONITOR_INTERVAL_MS, NULL))
     {
-        GetCursorPos(&ctx.ptLastPos); // 启动前同步坐标
-        SetTimer(ctx.hMainWnd, ID_TIMER_MONITOR, MONITOR_INTERVAL_MS, NULL);
         ctx.isMonitorRunning = true;
+    }
+    else
+    {
+        // 如果 SetTimer 失败（极罕见），标记为 false，依赖后续重试或下一次事件
+        ctx.isMonitorRunning = false;
     }
 }
 
@@ -373,6 +383,7 @@ void StopMonitor()
 // 隐藏指针
 void HideMouseCursor()
 {
+    StartMonitor(); // 强制启动指针移动监控器
     if (ctx.isCursorHidden || !ctx.hGlobalTransCursor)
         return;
     GetCursorPos(&ctx.ptLastPos); // 记录当前位置
@@ -405,18 +416,39 @@ void RestoreMouseCursor()
 // 窗口过程与辅助
 // ==================================================================================
 
-// 更新托盘图标和提示
-void UpdateTrayIcon()
+// 尝试添加托盘图标, 成功返回 true
+bool TryAddTrayIcon()
 {
     ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
-
-    // 在提示文本中增加管理员标识
     wchar_t szTip[128];
     wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
              ctx.isEnabled ? L"已开启" : L"已暂停",
              ctx.isAdmin ? L" [Admin]" : L"");
     wcscpy_s(ctx.nid.szTip, szTip);
-    Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
+
+    // 如果添加成功，或者已经是修改模式（返回TRUE），则标记成功
+    if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
+    {
+        ctx.isIconAdded = true;
+        return true;
+    }
+    return false;
+}
+
+// 更新托盘图标和提示
+void UpdateTrayIcon()
+{
+    if (ctx.isIconAdded)
+    {
+        ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
+        // 在提示文本中增加管理员标识
+        wchar_t szTip[128];
+        wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
+                 ctx.isEnabled ? L"已开启" : L"已暂停",
+                 ctx.isAdmin ? L" [Admin]" : L"");
+        wcscpy_s(ctx.nid.szTip, szTip);
+        Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
+    }
 }
 
 // 主窗口过程实现
@@ -444,8 +476,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         ctx.nid.uID = 1;
         ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         ctx.nid.uCallbackMessage = WM_TRAYICON;
-        UpdateTrayIcon();
-        Shell_NotifyIcon(NIM_ADD, &ctx.nid);
+
+        // 尝试添加图标，如果失败（开机启动太快），启动重试定时器
+        if (!TryAddTrayIcon())
+        {
+            ctx.iconRetryCount = 0;
+            SetTimer(hwnd, ID_TIMER_RETRY_ICON, 1000, NULL); // 每1秒重试一次
+        }
 
         if (ctx.isEnabled)
             UpdateHooks(true);
@@ -511,6 +548,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             KillTimer(hwnd, ID_TIMER_HIDE_DELAY);
             HideMouseCursor();
+        }
+        else if (wParam == ID_TIMER_RETRY_ICON) // 重试添加托盘图标回调
+        {
+            if (TryAddTrayIcon())
+            {
+                KillTimer(hwnd, ID_TIMER_RETRY_ICON); // 成功添加后停止重试
+            }
+            else
+            {
+                ctx.iconRetryCount++;
+                if (ctx.iconRetryCount >= ICON_RETRY_MAX) // 超时放弃
+                    KillTimer(hwnd, ID_TIMER_RETRY_ICON);
+            }
         }
         break;
 
