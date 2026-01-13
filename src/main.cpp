@@ -5,25 +5,21 @@
 //   g++ main.cpp resource.o -o FuckMouseCursor.exe -s -O2 -mwindows -static -fno-exceptions -fno-rtti
 // ==================================================================================
 
-//  1. 在最前面定义 Unicode，否则 Windows API 会默认用 char* 版本导致报错
-#define UNICODE
+#define UNICODE //  1. 在最前面定义 Unicode，否则 Windows API 会默认用 char* 版本导致报错
 #define _UNICODE
-// 2. 强制使用 OEM 资源 (用于加载系统光标)
-#define OEMRESOURCE
-// 3. 目标系统 Win10 (0x0A00)
-#define _WIN32_WINNT 0x0A00
-// 4. 极简模式，减少依赖
-#define WIN32_LEAN_AND_MEAN
+#define OEMRESOURCE         // 2. 强制使用 OEM 资源 (用于加载系统光标)
+#define _WIN32_WINNT 0x0A00 // 3. 目标系统 Win10 (0x0A00)
+#define WIN32_LEAN_AND_MEAN // 4. 极简模式，减少依赖
 
 #include <windows.h>
-#include <shellapi.h> // For ShellExecuteEx
+#include <shellapi.h>
 
 // ---链接指令---
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "shcore.lib")   // DPI适配需要
-#pragma comment(lib, "advapi32.lib") // For Reg* functions
+#pragma comment(lib, "advapi32.lib") // 注册表相关需要
 
 // --- 常量定义 ---
 constexpr int WM_TRAYICON = WM_USER + 1;       // 托盘图标消息
@@ -73,8 +69,6 @@ struct AppContext
     bool isCtrlDown;
     bool isAltDown;
     bool isWinDown;
-    // Shift 不需要拦截（Shift+A 是正常输入），但也记录一下备用
-    // bool isShiftDown;
 
     int monitorKeepAlive; // 监控器保活计数
     int iconRetryCount;   // 托盘图标添加重试计数
@@ -102,12 +96,10 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, 
 LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
 // ---资源与初始化---
-void InitTransparentCursor();    // 初始化透明指针
-void DestroyTransparentCursor(); // 销毁透明指针
-void InitResources();            // 封装所有资源初始化
-void CleanupResources();         // 封装所有资源清理
-void EnableHighDPI();            // 启用高DPI支持
-bool CheckIsAdmin();             // 检测管理员权限
+void InitResources();    // 封装所有资源初始化
+void CleanupResources(); // 封装所有资源清理
+void EnableHighDPI();    // 启用高DPI支持
+bool CheckIsAdmin();     // 检测管理员权限
 
 // ---核心功能---
 void UpdateHooks(bool enable);   // 统一管理钩子生命周期
@@ -137,17 +129,17 @@ bool IsContentKey(DWORD vkCode)
         return false;
 
     // 2. 白名单匹配 (整数比较，极快)
-
-    // A-Z (0x41 - 0x5A)
-    if (vkCode >= 0x41 && vkCode <= 0x5A)
+    if (vkCode >= 0x41 && vkCode <= 0x5A) // A-Z (0x41 - 0x5A)
         return true;
-
-    // 0-9 (0x30 - 0x39)
-    if (vkCode >= 0x30 && vkCode <= 0x39)
+    if (vkCode >= 0x30 && vkCode <= 0x39) // 0-9 (0x30 - 0x39)
         return true;
-
-    // 小键盘区域: 数字0-9 (0x60-0x69) + 乘加分隔减小点除 (0x6A-0x6F)
-    if (vkCode >= VK_NUMPAD0 && vkCode <= VK_DIVIDE)
+    if (vkCode >= VK_NUMPAD0 && vkCode <= VK_DIVIDE) // 小键盘区域: 数字0-9 (0x60-0x69) + 乘加分隔减小点除 (0x6A-0x6F)
+        return true;
+    if (vkCode >= VK_LEFT && vkCode <= VK_DOWN) // 方向键
+        return true;
+    if (vkCode >= VK_OEM_1 && vkCode <= VK_OEM_8) // 标点符号 (OEM Keys)
+        return true;
+    if (vkCode == VK_OEM_102)
         return true;
 
     // 核心控制键: 空格, 回车, 退格, TAB, Delete
@@ -162,16 +154,6 @@ bool IsContentKey(DWORD vkCode)
     default:
         break;
     }
-
-    // 方向键
-    if (vkCode >= VK_LEFT && vkCode <= VK_DOWN)
-        return true;
-
-    // 标点符号 (OEM Keys)
-    if (vkCode >= VK_OEM_1 && vkCode <= VK_OEM_8)
-        return true;
-    if (vkCode == VK_OEM_102)
-        return true;
 
     // 默认：不在白名单内，返回 false
     return false;
@@ -245,68 +227,40 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 void CALLBACK WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD event, HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime)
 {
     if (event == EVENT_SYSTEM_DESKTOPSWITCH)
-    {
         PostMessage(ctx.hMainWnd, WM_DESKTOP_SWITCH, 0, 0);
-    }
 }
 
 // ==================================================================================
 // 资源与状态管理
 // ==================================================================================
 
-// 初始化透明指针
-void InitTransparentCursor()
-{
-    BYTE andMask = 0xFF;
-    BYTE xorMask = 0x00;
-
-    // 创建 1x1 的单色光标
-    ctx.hGlobalTransCursor = CreateCursor(GetModuleHandle(NULL), 0, 0, 1, 1, &andMask, &xorMask);
-}
-
-// 销毁透明指针
-void DestroyTransparentCursor()
-{
-    if (ctx.hGlobalTransCursor)
-        DestroyCursor(ctx.hGlobalTransCursor);
-}
-
 // 封装所有资源初始化
 void InitResources()
 {
+    HINSTANCE hInst = GetModuleHandle(NULL);
 
-    // 1. 初始化透明光标
-    InitTransparentCursor();
+    // 1. 初始化 1x1 透明光标
+    BYTE andMask = 0xFF;
+    BYTE xorMask = 0x00;
+    ctx.hGlobalTransCursor = CreateCursor(hInst, 0, 0, 1, 1, &andMask, &xorMask);
 
     // 2. 预加载图标
-    ctx.hIconApp = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(101));
-    if (!ctx.hIconApp)
-        ctx.hIconApp = LoadIcon(NULL, IDI_APPLICATION); // 回退方案
-
-    ctx.hIconPause = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(102));
-    if (!ctx.hIconPause)
-        ctx.hIconPause = LoadIcon(NULL, IDI_SHIELD); // 回退方案
+    ctx.hIconApp = LoadIcon(hInst, MAKEINTRESOURCE(101));
+    ctx.hIconPause = LoadIcon(hInst, MAKEINTRESOURCE(102));
 }
 
 // 封装所有资源清理
 void CleanupResources()
 {
     // 1. 销毁透明光标
-    DestroyTransparentCursor();
-    // 2. 销毁图标资源
-    // DestroyIcon 只能销毁 CreateIcon/CreateIconIndirect 创建的图标
-    // 对于 LoadIcon 加载的共享图标（Shared Icon），系统会自动回收，但显式 Destroy 也是安全的且符合 RAII 精神
-    // 如果未来改为 LoadImage (非共享)，这一步是必须的
-    if (ctx.hIconApp)
+    if (ctx.hGlobalTransCursor)
     {
-        DestroyIcon(ctx.hIconApp);
-        ctx.hIconApp = NULL;
+        DestroyCursor(ctx.hGlobalTransCursor);
+        ctx.hGlobalTransCursor = NULL;
     }
-    if (ctx.hIconPause)
-    {
-        DestroyIcon(ctx.hIconPause);
-        ctx.hIconPause = NULL;
-    }
+    // LoadIcon 图标资源由系统管理，不应该通过 DestroyIcon 销毁
+    ctx.hIconApp = NULL;
+    ctx.hIconPause = NULL;
 }
 
 // 统一管理钩子生命周期
@@ -321,14 +275,10 @@ void UpdateHooks(bool enable)
 
         // 2. 挂载钩子
         if (!ctx.hKeyboardHook)
-        {
             ctx.hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, GetModuleHandle(NULL), 0);
-        }
         if (!ctx.hEventHook)
-        {
             ctx.hEventHook = SetWinEventHook(EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_DESKTOPSWITCH,
                                              NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-        }
     }
     else
     {
@@ -356,16 +306,10 @@ void UpdateHooks(bool enable)
 void StartMonitor()
 {
     GetCursorPos(&ctx.ptLastPos); // 启动前同步坐标
-    // 尝试启动定时器，根据返回值判断是否成功
     if (SetTimer(ctx.hMainWnd, ID_TIMER_MONITOR, MONITOR_INTERVAL_MS, NULL))
-    {
         ctx.isMonitorRunning = true;
-    }
     else
-    {
-        // 如果 SetTimer 失败（极罕见），标记为 false，依赖后续重试或下一次事件
         ctx.isMonitorRunning = false;
-    }
 }
 
 // 停止指针移动监控器
