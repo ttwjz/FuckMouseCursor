@@ -418,6 +418,7 @@ void RestoreMouseCursor()
 // 更新托盘图标和提示
 bool UpdateTrayIcon()
 {
+    ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     // 1. 准备数据 (公共逻辑)
     ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
     wchar_t szTip[128];
@@ -430,19 +431,17 @@ bool UpdateTrayIcon()
     if (ctx.isIconAdded)
     {
         // 已经添加过，执行更新
-        Shell_NotifyIcon(NIM_MODIFY, &ctx.nid);
+        if (Shell_NotifyIcon(NIM_MODIFY, &ctx.nid))
+            return true; // 更新成功
+    }
+    // 尚未添加，执行添加
+    if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
+    {
+        ctx.isIconAdded = true;
         return true;
     }
-    else
-    {
-        // 尚未添加，执行添加
-        if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
-        {
-            ctx.isIconAdded = true; // 标记成功
-            return true;
-        }
-        return false; // 添加失败 (Explorer可能还没准备好)
-    }
+    ctx.isIconAdded = false;
+    return false; // 添加失败 (Explorer可能还没准备好)
 }
 
 // 主窗口过程实现
@@ -452,7 +451,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     if (msg == ctx.uTaskbarCreatedMsg)
     {
         ctx.isIconAdded = false; // 强制标记为未添加，触发 NIM_ADD
-        Shell_NotifyIcon(NIM_ADD, &ctx.nid);
+        UpdateTrayIcon();
         return 0;
     }
 
@@ -469,7 +468,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         ctx.nid.cbSize = sizeof(NOTIFYICONDATA);
         ctx.nid.hWnd = hwnd;
         ctx.nid.uID = 1;
-        ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        // ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         ctx.nid.uCallbackMessage = WM_TRAYICON;
 
         // 尝试添加图标，如果失败（开机启动太快），启动重试定时器
