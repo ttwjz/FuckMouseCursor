@@ -39,7 +39,7 @@ constexpr int ID_TIMER_HIDE_DELAY = 101; // 指针隐藏延时器ID
 constexpr int ID_TIMER_MONITOR = 102;    // 指针移动监控器ID
 constexpr int ID_TIMER_RETRY_ICON = 103; // 图标重试定时器
 
-constexpr int HIDE_DELAY_MS = 500;                            // 指针隐藏延时500ms
+constexpr int HIDE_DELAY_MS = 210;                            // 指针隐藏延时210ms
 constexpr int MONITOR_INTERVAL_MS = 100;                      // 指针移动监控器间隔100ms
 constexpr int MONITOR_KEEPALIVE = 2000 / MONITOR_INTERVAL_MS; // 指针移动监控器保活2秒
 constexpr int MOUSE_THRESHOLD = 100;                          // 指针移动阈值 (像素距离的平方)
