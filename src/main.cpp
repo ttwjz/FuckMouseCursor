@@ -68,7 +68,6 @@ struct AppContext
     bool isMonitorRunning;      // 100ms指针移动监控器是否运行
     bool isLongPressSuppressed; // 长按抑制标记
     bool isAdmin;               // 当前是否为管理员权限
-    bool isIconAdded;           // 托盘图标是否添加成功
 
     // 状态追踪变量 (用于 IsContentKey)
     bool isCtrlDown;
@@ -418,30 +417,32 @@ void RestoreMouseCursor()
 // 更新托盘图标和提示
 bool UpdateTrayIcon()
 {
-    ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    // 1. 准备数据 (公共逻辑)
+    // 1. 准备数据
     ctx.nid.hIcon = ctx.isEnabled ? ctx.hIconApp : ctx.hIconPause;
+
     wchar_t szTip[128];
     wsprintf(szTip, L"去你的鼠标指针 (%s)%s",
              ctx.isEnabled ? L"已开启" : L"已暂停",
              ctx.isAdmin ? L" [Admin]" : L"");
     wcscpy_s(ctx.nid.szTip, szTip);
 
-    // 2. 根据状态决定动作
-    if (ctx.isIconAdded)
-    {
-        // 已经添加过，执行更新
-        if (Shell_NotifyIcon(NIM_MODIFY, &ctx.nid))
-            return true; // 更新成功
-    }
-    // 尚未添加，执行添加
-    if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
-    {
-        ctx.isIconAdded = true;
+    // 2. 优先 Modify
+    if (Shell_NotifyIcon(NIM_MODIFY, &ctx.nid))
         return true;
+
+    // 3. Modify 失败，说明系统里没图标，尝试 Add
+    if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
+        return true;
+
+    // 4. Add 失败 (E_FAIL 0x80004005)，强制重置，先删再加
+    if (GetLastError() == 0x80004005)
+    {
+        Shell_NotifyIcon(NIM_DELETE, &ctx.nid); // 先删
+        if (Shell_NotifyIcon(NIM_ADD, &ctx.nid))
+            return true;
     }
-    ctx.isIconAdded = false;
-    return false; // 添加失败 (Explorer可能还没准备好)
+
+    return false; // 彻底失败
 }
 
 // 主窗口过程实现
@@ -450,7 +451,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     // 监听任务栏重建消息
     if (msg == ctx.uTaskbarCreatedMsg)
     {
-        ctx.isIconAdded = false; // 强制标记为未添加，触发 NIM_ADD
         UpdateTrayIcon();
         return 0;
     }
@@ -460,15 +460,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CREATE: // 窗口创建
         ctx.isEnabled = true;
         ctx.hMainWnd = hwnd;
-        ctx.isAdmin = CheckIsAdmin();                                      // 初始化时检测权限
-        ctx.uTaskbarCreatedMsg = RegisterWindowMessage(L"TaskbarCreated"); // 注册任务栏重建消息
+        ctx.isAdmin = CheckIsAdmin();                                                  // 初始化时检测权限
+        ctx.uTaskbarCreatedMsg = RegisterWindowMessage(L"TaskbarCreated");             // 注册任务栏重建消息
+        ChangeWindowMessageFilterEx(hwnd, ctx.uTaskbarCreatedMsg, MSGFLT_ALLOW, NULL); // 权限允许
 
         InitResources(); // 初始化资源
 
         ctx.nid.cbSize = sizeof(NOTIFYICONDATA);
         ctx.nid.hWnd = hwnd;
         ctx.nid.uID = 1;
-        // ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        ctx.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         ctx.nid.uCallbackMessage = WM_TRAYICON;
 
         // 尝试添加图标，如果失败（开机启动太快），启动重试定时器
